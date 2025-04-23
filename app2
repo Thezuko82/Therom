@@ -1,0 +1,97 @@
+import numpy as np
+import streamlit as st
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# GUI Inputs
+st.title("Solute Transport through 11-Layered Profile")
+
+L = st.number_input("Total Profile Length (m)", value=5.0)
+Nx = st.slider("Number of Spatial Grid Points", min_value=100, max_value=500, value=200, step=10)
+dx = L / Nx
+x = np.linspace(0, L, Nx)
+
+T = st.number_input("Total Simulation Time (days)", value=100.0)
+dt = st.number_input("Time Step (days)", value=0.1)
+Nt = int(T / dt)
+
+# Material properties: [D (m²/d), v (m/d), lambda (1/d)]
+solid_waste = [1e-3, 1e-4, 0.001]
+clayey_soil = [5e-4, 5e-5, 0.0005]
+gravel = [2e-3, 5e-4, 0.0002]
+
+# Layer thicknesses
+layer_thick = np.array([0.25, 0.02, 0.04, 0.02, 0.25, 0.02, 0.04, 0.02, 0.25, 0.02, 0.04])
+layer_edges = np.cumsum(layer_thick)
+layer_starts = np.concatenate(([0], layer_edges[:-1]))
+
+# Allocate property arrays
+D = np.zeros(Nx)
+v = np.zeros(Nx)
+lam = np.zeros(Nx)
+
+# Assign properties to each grid point
+for i in range(Nx):
+    xi = x[i]
+    for j in range(11):
+        if layer_starts[j] <= xi < layer_edges[j]:
+            if j in [0, 4, 8]:
+                props = solid_waste
+            elif j in [1, 3, 5, 7, 9]:
+                props = clayey_soil
+            else:
+                props = gravel
+            D[i], v[i], lam[i] = props
+
+# Concentration matrix
+C = np.zeros((Nx, Nt))
+C[:, 0] = 100
+C[0, :] = 0
+C[-1, :] = 0
+
+# Time loop
+for t in range(Nt - 1):
+    for i in range(1, Nx - 1):
+        adv = -v[i] * (C[i, t] - C[i - 1, t]) / dx
+        disp = D[i] * (C[i + 1, t] - 2 * C[i, t] + C[i - 1, t]) / dx**2
+        decay = -lam[i] * C[i, t]
+        C_next = C[i, t] + dt * (adv + disp + decay)
+
+        if not np.isnan(C_next) and not np.isinf(C_next):
+            C[i, t + 1] = C_next
+        else:
+            C[i, t + 1] = 0
+    C[-1, t + 1] = C[-2, t + 1]
+
+# Identify indices for gravel layers 3, 7, 11
+target_layers = [2, 6, 10]
+target_depths = np.cumsum(layer_thick)[target_layers]
+target_idx = [np.argmin(np.abs(x - (d - 0.5 * layer_thick[layer]))) for d, layer in zip(target_depths, target_layers)]
+
+# Plot
+st.subheader("Concentration vs Time at Selected Gravel Layers")
+tvec = np.linspace(0, T - dt, Nt)
+
+fig, ax = plt.subplots()
+colors = ['red', 'green', 'blue']
+labels = ["Layer 3 (Gravel)", "Layer 7 (Gravel)", "Layer 11 (Gravel)"]
+
+for idx, color, label in zip(target_idx, colors, labels):
+    ax.plot(tvec, C[idx, :], color=color, label=label)
+
+ax.set_xlabel("Time (days)")
+ax.set_ylabel("Concentration (mg/L)")
+ax.set_title("Concentration vs. Time at Selected Gravel Layers")
+ax.legend()
+st.pyplot(fig)
+
+# Export CSVs
+for i, label in zip(target_idx, ["Layer3", "Layer7", "Layer11"]):
+    df = pd.DataFrame({"Time (days)": tvec, "Concentration (mg/L)": C[i, :]})
+    csv = df.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label=f"Download {label}_Concentration.csv",
+        data=csv,
+        file_name=f"{label}_Concentration.csv",
+        mime='text/csv'
+    )
